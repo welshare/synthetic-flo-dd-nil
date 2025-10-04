@@ -118,15 +118,16 @@ class SyntheticCohortGenerator:
         signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
         return signing_key
 
-    def generate_patient_id(self) -> str:
+    def generate_patient_id(self) -> tuple[str, Dict[str, Any]]:
         """
         Generate deterministic DID from HD wallet-derived secp256k1 key
 
         Returns:
-            DID in format did:nil:{compressed_public_key_hex}
+            Tuple of (DID in format did:nil:{compressed_public_key_hex}, key_material dict)
         """
         # Derive next key from HD wallet
         signing_key = self._derive_child_key(self.current_key_index)
+        key_index = self.current_key_index
         self.current_key_index += 1
 
         # Get compressed public key (33 bytes: 02/03 prefix + 32 bytes x-coordinate)
@@ -142,8 +143,20 @@ class SyntheticCohortGenerator:
 
         # Convert to hex for DID
         pubkey_hex = compressed_public_key.hex()
+        did = f"did:nil:{pubkey_hex}"
 
-        return f"did:nil:{pubkey_hex}"
+        # Prepare key material for storage
+        private_key_hex = signing_key.to_string().hex()
+        key_material = {
+            "did": did,
+            "key_index": key_index,
+            "private_key": private_key_hex,
+            "public_key_compressed": compressed_public_key.hex(),
+            "public_key_uncompressed": public_key_bytes.hex(),
+            "curve": "secp256k1"
+        }
+
+        return did, key_material
 
     def generate_delivery_method(self, patient_idx: int) -> str:
         """Assign insulin delivery method (65% pump, 35% injection)"""
@@ -302,6 +315,7 @@ class SyntheticCohortGenerator:
         Returns:
             List of patient records, each containing:
             - patient_id
+            - key_material
             - flo_response
             - dao_response
             - metadata
@@ -310,8 +324,8 @@ class SyntheticCohortGenerator:
         reference_date = datetime.now()
 
         for i in range(self.cohort_size):
-            # Generate patient identity
-            patient_id = self.generate_patient_id()
+            # Generate patient identity and key material
+            patient_id, key_material = self.generate_patient_id()
 
             # Generate Flo cycle data
             lmp_date_str = self.generate_lmp_date(reference_date)
@@ -334,6 +348,7 @@ class SyntheticCohortGenerator:
             # Compile patient record
             patient_record = {
                 "patient_id": patient_id,
+                "key_material": key_material,
                 "flo_response": flo_response,
                 "dao_response": dao_response,
                 "metadata": {
@@ -418,6 +433,119 @@ def generate_seed_phrase():
     print("         can derive all patient DIDs from your cohorts.")
 
 
+def verify_did_key(did: str):
+    """
+    Verify that a DID's stored private key matches its public key
+
+    Args:
+        did: The DID to verify (format: did:nil:{pubkey_hex})
+    """
+    # Extract the public key hex from the DID
+    if not did.startswith("did:nil:"):
+        print(f"ERROR: Invalid DID format. Expected 'did:nil:{{pubkey}}', got: {did}")
+        return False
+
+    pubkey_from_did = did.split(":")[-1]
+
+    # Look up the .key.json file
+    key_path = OUTPUT_DIR / f"{pubkey_from_did}.key.json"
+
+    if not key_path.exists():
+        print(f"ERROR: Key file not found: {key_path}")
+        print(f"Make sure the DID exists in the {OUTPUT_DIR}/ directory")
+        return False
+
+    # Load the key material
+    try:
+        with open(key_path, 'r') as f:
+            key_material = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Invalid JSON in key file: {e}")
+        return False
+
+    print(f"Verifying DID: {did}")
+    print("=" * 70)
+
+    # Verify the stored DID matches
+    if key_material.get("did") != did:
+        print(f"ERROR: DID mismatch!")
+        print(f"  Expected: {did}")
+        print(f"  Stored:   {key_material.get('did')}")
+        return False
+
+    # Reconstruct public key from private key
+    try:
+        private_key_hex = key_material.get("private_key")
+        if not private_key_hex:
+            print("ERROR: No private_key found in key material")
+            return False
+
+        private_key_bytes = bytes.fromhex(private_key_hex)
+        signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
+        verifying_key = signing_key.get_verifying_key()
+
+        # Get uncompressed public key
+        public_key_bytes = verifying_key.to_string()  # 64 bytes
+
+        # Verify uncompressed public key matches
+        stored_uncompressed = key_material.get("public_key_uncompressed")
+        derived_uncompressed = public_key_bytes.hex()
+
+        if stored_uncompressed != derived_uncompressed:
+            print(f"ERROR: Uncompressed public key mismatch!")
+            print(f"  Stored:  {stored_uncompressed}")
+            print(f"  Derived: {derived_uncompressed}")
+            return False
+
+        # Compress the public key
+        x_coord = public_key_bytes[:32]
+        y_coord = public_key_bytes[32:]
+        y_is_odd = y_coord[-1] & 1
+        prefix = b'\x03' if y_is_odd else b'\x02'
+        compressed_public_key = prefix + x_coord
+
+        # Verify compressed public key matches
+        stored_compressed = key_material.get("public_key_compressed")
+        derived_compressed = compressed_public_key.hex()
+
+        if stored_compressed != derived_compressed:
+            print(f"ERROR: Compressed public key mismatch!")
+            print(f"  Stored:  {stored_compressed}")
+            print(f"  Derived: {derived_compressed}")
+            return False
+
+        # Verify the compressed public key matches the DID
+        if derived_compressed != pubkey_from_did:
+            print(f"ERROR: DID public key mismatch!")
+            print(f"  From DID: {pubkey_from_did}")
+            print(f"  Derived:  {derived_compressed}")
+            return False
+
+        # All checks passed
+        print("✓ DID matches stored value")
+        print("✓ Private key is valid")
+        print("✓ Derived public key (uncompressed) matches stored value")
+        print("✓ Derived public key (compressed) matches stored value")
+        print("✓ Compressed public key matches DID")
+        print("\n" + "=" * 70)
+        print("VERIFICATION SUCCESSFUL")
+        print("=" * 70)
+        print(f"\nKey details:")
+        print(f"  DID: {did}")
+        print(f"  Key index: {key_material.get('key_index')}")
+        print(f"  Curve: {key_material.get('curve')}")
+        print(f"  Private key: {private_key_hex[:16]}...{private_key_hex[-16:]}")
+        print(f"  Public key (compressed): {derived_compressed}")
+
+        return True
+
+    except Exception as e:
+        print(f"ERROR: Failed to verify key: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def main():
     """Main CLI execution"""
     parser = argparse.ArgumentParser(
@@ -425,15 +553,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s 187              Generate 187 patients (default)
-  %(prog)s 200              Generate 200 patients (400 response files)
-  %(prog)s 150 --seed 123   Generate 150 patients with seed 123
-  %(prog)s 187 --stats      Show statistics only
-  %(prog)s clean            Clean output directory
-  %(prog)s generate-seed    Generate new BIP39 seed phrase for HD wallet
+  %(prog)s 187                        Generate 187 patients (default)
+  %(prog)s 200                        Generate 200 patients (600 response files)
+  %(prog)s 150 --seed 123             Generate 150 patients with seed 123
+  %(prog)s 187 --stats                Show statistics only
+  %(prog)s clean                      Clean output directory
+  %(prog)s generate-seed              Generate new BIP39 seed phrase for HD wallet
+  %(prog)s verify-key <DID>           Verify DID key material
 
 Output:
-  Each patient generates 2 files: {patient_id}_flo.json and {patient_id}_dao.json
+  Each patient generates 3 files: {patient_id}.key.json, {patient_id}_flo.json, and {patient_id}_dao.json
   All files saved to output/ directory (git-ignored)
         """
     )
@@ -442,7 +571,13 @@ Output:
         'command_or_size',
         nargs='?',
         default='187',
-        help='Command (clean, generate-seed) or cohort size (default: 187)'
+        help='Command (clean, generate-seed, verify-key) or cohort size (default: 187)'
+    )
+
+    parser.add_argument(
+        'did',
+        nargs='?',
+        help='DID to verify (required for verify-key command)'
     )
 
     parser.add_argument(
@@ -474,6 +609,13 @@ Output:
     # Handle generate-seed command
     if args.command_or_size == 'generate-seed':
         generate_seed_phrase()
+        return
+
+    # Handle verify-key command
+    if args.command_or_size == 'verify-key':
+        if not args.did:
+            parser.error("verify-key command requires a DID argument")
+        verify_did_key(args.did)
         return
 
     # Parse cohort size
@@ -524,6 +666,12 @@ Output:
         for patient in cohort:
             patient_id = patient["patient_id"].split(":")[-1]  # Extract UUID from DID
 
+            # Save key material
+            key_path = OUTPUT_DIR / f"{patient_id}.key.json"
+            with open(key_path, 'w') as f:
+                json.dump(patient["key_material"], f, indent=2)
+            total_files += 1
+
             # Save Flo response
             flo_path = OUTPUT_DIR / f"{patient_id}_flo.json"
             with open(flo_path, 'w') as f:
@@ -538,8 +686,8 @@ Output:
 
         if not args.quiet:
             print("\n" + "=" * 70)
-            print(f"Saved {total_files} questionnaire response files to {OUTPUT_DIR}/")
-            print(f"  {len(cohort)} patients × 2 questionnaires = {total_files} files")
+            print(f"Saved {total_files} files to {OUTPUT_DIR}/")
+            print(f"  {len(cohort)} patients × 3 files (key + 2 questionnaires) = {total_files} files")
 
 
 if __name__ == "__main__":
