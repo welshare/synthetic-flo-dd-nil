@@ -315,11 +315,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s 187                    Generate 187 patients (default)
-  %(prog)s 200 -o cohort.json    Generate 200 patients, save to output/cohort.json
-  %(prog)s 150 --seed 123         Generate 150 patients with seed 123
-  %(prog)s 187 --stats            Show statistics only
-  %(prog)s clean                  Clean output directory
+  %(prog)s 187              Generate 187 patients (default)
+  %(prog)s 200              Generate 200 patients (400 response files)
+  %(prog)s 150 --seed 123   Generate 150 patients with seed 123
+  %(prog)s 187 --stats      Show statistics only
+  %(prog)s clean            Clean output directory
+
+Output:
+  Each patient generates 2 files: {patient_id}_flo.json and {patient_id}_dao.json
+  All files saved to output/ directory (git-ignored)
         """
     )
 
@@ -328,13 +332,6 @@ Examples:
         nargs='?',
         default='187',
         help='Command (clean) or cohort size (default: 187)'
-    )
-
-    parser.add_argument(
-        '-o', '--output',
-        type=str,
-        default='synthetic_cohort.json',
-        help='Output filename (saved to output/ directory, default: synthetic_cohort.json)'
     )
 
     parser.add_argument(
@@ -405,15 +402,28 @@ Examples:
         print(f"  Basal insulin: +{stats['luteal_stats']['mean_basal'] - stats['follicular_stats']['mean_basal']:.1f} units")
         print(f"\nAge range: {stats['age_range']['min']}-{stats['age_range']['max']} (mean: {stats['age_range']['mean']:.1f})")
 
-    # Save cohort
+    # Save cohort as individual response files
     if not args.stats:
-        output_path = OUTPUT_DIR / args.output
-        with open(output_path, 'w') as f:
-            json.dump(cohort, f, indent=2)
+        total_files = 0
+        for patient in cohort:
+            patient_id = patient["patient_id"].split(":")[-1]  # Extract UUID from DID
+
+            # Save Flo response
+            flo_path = OUTPUT_DIR / f"{patient_id}_flo.json"
+            with open(flo_path, 'w') as f:
+                json.dump(patient["flo_response"], f, indent=2)
+            total_files += 1
+
+            # Save DAO response
+            dao_path = OUTPUT_DIR / f"{patient_id}_dao.json"
+            with open(dao_path, 'w') as f:
+                json.dump(patient["dao_response"], f, indent=2)
+            total_files += 1
 
         if not args.quiet:
             print("\n" + "=" * 70)
-            print(f"Saved {len(cohort)} patient records to {output_path}")
+            print(f"Saved {total_files} questionnaire response files to {OUTPUT_DIR}/")
+            print(f"  {len(cohort)} patients × 2 questionnaires = {total_files} files")
 
 
 if __name__ == "__main__":

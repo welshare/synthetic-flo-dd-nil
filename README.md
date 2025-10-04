@@ -56,7 +56,6 @@ Arguments:
   command|cohort_size     Command (clean) or number of patients (default: 187)
 
 Options:
-  -o, --output FILE       Output filename (saved to output/, default: synthetic_cohort.json)
   --seed SEED             Random seed for reproducibility (default: 42)
   --stats                 Show statistics only (no file output)
   --quiet                 Suppress output messages
@@ -66,11 +65,8 @@ Options:
 ### Examples
 
 ```bash
-# Generate 200 patients (saves to output/synthetic_cohort.json)
+# Generate 200 patients (creates 400 response files)
 python3 synth_cohort.py 200
-
-# Save to custom filename in output/
-python3 synth_cohort.py 187 -o my_cohort.json
 
 # Use different random seed
 python3 synth_cohort.py 150 --seed 123
@@ -85,36 +81,80 @@ python3 synth_cohort.py 200 --quiet
 python3 synth_cohort.py clean
 ```
 
-### Output Directory
+### Output Structure
 
-All generated files are saved to the `output/` directory, which is git-ignored. Use `python3 synth_cohort.py clean` to remove all generated files.
+Each patient generates **2 individual response files** in the `output/` directory:
 
-## Output Structure
+```
+output/
+├── {patient_id}_flo.json    # Flo cycle questionnaire response
+├── {patient_id}_dao.json    # DiabetesDAO questionnaire response
+├── ...
+```
 
-Each patient record contains:
+For example, generating 187 patients creates **374 files** (187 × 2).
 
+All files in `output/` are git-ignored. Use `python3 synth_cohort.py clean` to remove all generated files.
+
+## File Format
+
+Each file contains a single FHIR QuestionnaireResponse resource:
+
+**Example: `{patient_id}_flo.json`**
 ```json
 {
-  "patient_id": "did:welshare:...",
-  "flo_response": {
-    "resourceType": "QuestionnaireResponse",
-    "questionnaire": "https://welshare.health/hpmp/questionnaire/flo-cycle-v2",
-    "item": [...]
+  "resourceType": "QuestionnaireResponse",
+  "id": "...",
+  "questionnaire": "https://welshare.health/hpmp/questionnaire/flo-cycle-v2",
+  "status": "completed",
+  "subject": {
+    "reference": "did:welshare:..."
   },
-  "dao_response": {
-    "resourceType": "QuestionnaireResponse",
-    "questionnaire": "https://welshare.health/hpmp/questionnaire/dao-diabetes-insulin-cgm-v2",
-    "item": [...]
+  "authored": "2025-10-04T...",
+  "item": [
+    {
+      "linkId": "lmp",
+      "text": "When did your last menstrual period begin?",
+      "answer": [{"valueDate": "2025-09-20"}]
+    },
+    {
+      "linkId": "cycle-length",
+      "text": "What is your typical cycle length (days)?",
+      "answer": [{"valueInteger": 28}]
+    }
+  ]
+}
+```
+
+**Example: `{patient_id}_dao.json`**
+```json
+{
+  "resourceType": "QuestionnaireResponse",
+  "id": "...",
+  "questionnaire": "https://welshare.health/hpmp/questionnaire/dao-diabetes-insulin-cgm-v2",
+  "status": "completed",
+  "subject": {
+    "reference": "did:welshare:..."
   },
-  "metadata": {
-    "age": 32,
-    "delivery_method": "Insulin pump",
-    "cycle_phase": "luteal",
-    "lmp_date": "2025-09-20",
-    "cycle_length": 28,
-    "basal_insulin": 16.2,
-    "nighttime_glucose": 127.5
-  }
+  "authored": "2025-10-04T...",
+  "item": [
+    {
+      "linkId": "delivery-method",
+      "answer": [{"valueString": "Insulin pump"}]
+    },
+    {
+      "linkId": "basal-dose-24h",
+      "answer": [{"valueDecimal": 16.2}]
+    },
+    {
+      "linkId": "cgm-avg-0006",
+      "answer": [{"valueDecimal": 127.5}]
+    },
+    {
+      "linkId": "age",
+      "answer": [{"valueInteger": 32}]
+    }
+  ]
 }
 ```
 
