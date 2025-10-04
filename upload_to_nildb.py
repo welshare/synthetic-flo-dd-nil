@@ -21,7 +21,7 @@ from secretvaults.user import SecretVaultUserClient
 from secretvaults.common.keypair import Keypair
 from secretvaults.common.blindfold import BlindfoldFactoryConfig, BlindfoldOperation
 from secretvaults.dto.data import CreateOwnedDataRequest
-from secretvaults.dto.users import AclDto
+from secretvaults.dto.users import AclDto, DeleteDocumentRequestParams
 from nuc.builder import NucTokenBuilder
 from nuc.token import Command
 from secretvaults.common.nuc_cmd import NucCmd 
@@ -206,6 +206,58 @@ class NillionUploader:
             "dao_document_id": dao_result.ids[0] if dao_result.ids else None,
         }
 
+    async def delete_document(
+        self,
+        user_did: str,
+        user_private_key: str,
+        document_id: str
+    ) -> Dict[str, Any]:
+        """
+        Delete a document from nilDB using user credentials
+
+        Args:
+            user_did: User's DID (format: did:nil:{pubkey})
+            user_private_key: User's private key (hex)
+            document_id: Document ID to delete
+
+        Returns:
+            Dict with deletion result
+        """
+        # Create builder client for delegation token
+        async with await self.create_builder_client() as builder_client:
+            # Create user client
+            user_client = await self.create_user_client(user_private_key)
+
+            # Refresh builder's root token
+            await builder_client.refresh_root_token()
+            root_token_envelope = builder_client.root_token
+
+            # Create delegation token for data deletion
+            delegation_token = (
+                NucTokenBuilder.extending(root_token_envelope)
+                .command(Command(NucCmd.NIL_DB_DATA_DELETE.value.split(".")))
+                .audience(user_client.id)
+                .expires_at(datetime.fromtimestamp(into_seconds_from_now(60)))
+                .build(builder_client.keypair.private_key())
+            )
+
+            # Create delete request
+            delete_request = DeleteDocumentRequestParams(
+                collection=self.collection_id,
+                document=document_id
+            )
+
+            # Delete the document
+            await user_client.delete_data(delete_request)
+
+            await user_client.close()
+
+            return {
+                "user_did": user_did,
+                "document_id": document_id,
+                "status": "deleted"
+            }
+
     async def upload_single_patient(self, patient_did: str, output_dir: Path) -> Dict[str, str]:
         """
         Upload a single patient's responses to nilDB
@@ -247,9 +299,7 @@ class NillionUploader:
             dao_response = json.load(f)
 
         # Create builder client and upload
-        builder_client = await self.create_builder_client()
-
-        try:
+        async with await self.create_builder_client() as builder_client:
             result = await self.upload_patient_responses(
                 builder_client=builder_client,
                 patient_id=patient_did,
@@ -257,8 +307,6 @@ class NillionUploader:
                 flo_response=flo_response,
                 dao_response=dao_response,
             )
-        finally:
-            await builder_client.close()
 
         return result
 
@@ -285,9 +333,7 @@ class NillionUploader:
         print("=" * 70)
 
         # Create builder client once for all uploads
-        builder_client = await self.create_builder_client()
-
-        try:
+        async with await self.create_builder_client() as builder_client:
             for idx, key_file in enumerate(key_files, 1):
                 # Extract patient ID from filename
                 patient_pubkey = key_file.stem.replace(".key", "")
@@ -329,8 +375,6 @@ class NillionUploader:
                 except Exception as e:
                     print(f"  ERROR: Upload failed: {e}")
                     continue
-        finally:
-            await builder_client.close()
 
         return upload_results
 
@@ -347,6 +391,9 @@ Examples:
 
   # Upload single patient by DID
   %(prog)s --collection-id abc123 --did did:nil:03a1b2c3d4...
+
+  # Delete a document
+  %(prog)s --did did:nil:03a1b2c3d4... --delete doc_id_123
 
   # Upload from custom directory
   %(prog)s --collection-id abc123 --dir custom_output/
@@ -379,6 +426,13 @@ Output:
     )
 
     parser.add_argument(
+        '--delete',
+        type=str,
+        metavar='DOCUMENT_ID',
+        help='Delete a document by ID (requires --did for user authentication)'
+    )
+
+    parser.add_argument(
         '--dir',
         type=str,
         default='output',
@@ -408,10 +462,67 @@ Output:
         print('  export NILLION_BUILDER_PRIVATE_KEY="your_key_here"')
         exit(1)
 
-    # Get collection ID
+    # Handle delete command
+    if args.delete:
+        if not args.did:
+            print("ERROR: --did is required when using --delete")
+            print("Usage: --did did:nil:03a1b2c3... --delete <document_id>")
+            exit(1)
+
+        # Extract user public key from DID
+        user_pubkey = args.did.split(":")[-1]
+
+        # Validate output directory for key file
+        output_dir = Path(args.dir)
+        if not output_dir.exists():
+            print(f"ERROR: Directory not found: {output_dir}")
+            exit(1)
+
+        # Load user's private key
+        key_file = output_dir / f"{user_pubkey}.key.json"
+        if not key_file.exists():
+            print(f"ERROR: Key file not found: {key_file}")
+            print(f"Make sure the user DID exists in {output_dir}/")
+            exit(1)
+
+        with open(key_file, 'r') as f:
+            key_material = json.load(f)
+
+        uploader = NillionUploader(
+            builder_private_key=builder_key,
+            collection_id = args.collection_id or os.getenv('NILLION_COLLECTION_ID'),
+            nildb_nodes=args.nildb_nodes
+        )
+
+        # Delete document
+        try:
+            print(f"Deleting document: {args.delete}")
+            print(f"User DID: {args.did}")
+            print("=" * 70)
+
+            result = await uploader.delete_document(
+                user_did=args.did,
+                user_private_key=key_material["private_key"],
+                document_id=args.delete
+            )
+
+            print(f"\n✓ Document deleted successfully!")
+            print(f"  User: {result['user_did']}")
+            print(f"  Document ID: {result['document_id']}")
+            print(f"  Status: {result['status']}")
+
+        except Exception as e:
+            print(f"ERROR: Delete failed: {e}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
+
+        return
+
+    # Get collection ID (required for upload operations)
     collection_id = args.collection_id or os.getenv('NILLION_COLLECTION_ID')
     if not collection_id:
-        print("ERROR: Collection ID required")
+        print("ERROR: Collection ID required for upload operations")
         print("Provide via --collection-id or set NILLION_COLLECTION_ID env var")
         exit(1)
 

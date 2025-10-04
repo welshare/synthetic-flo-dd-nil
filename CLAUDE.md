@@ -39,6 +39,9 @@ python3 upload_to_nildb.py --collection-id <collection_id>
 # Upload single patient by DID
 python3 upload_to_nildb.py --collection-id <collection_id> --did did:nil:03a1b2c3d4...
 
+# Delete a document by ID
+python3 upload_to_nildb.py --did did:nil:03a1b2c3d4... --delete <document_id>
+
 # Upload from custom directory
 python3 upload_to_nildb.py --collection-id <collection_id> --dir custom_output/
 
@@ -57,6 +60,7 @@ python3 upload_to_nildb.py --collection-id <collection_id> --nildb-nodes https:/
 1. Creates one NUC per synthetic patient using their secp256k1 private key
 2. Uploads both questionnaire responses (Flo + DAO) to the specified collection
 3. Generates an upload manifest JSON with all document IDs
+4. Delete operation uses the user's DID and private key to authenticate deletion
 
 ### No Tests
 This project does not currently have tests.
