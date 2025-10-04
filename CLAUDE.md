@@ -31,6 +31,33 @@ python3 synth_cohort.py 187 --stats
 python3 synth_cohort.py clean
 ```
 
+### Upload to Nillion nilDB
+```bash
+# Upload entire cohort to Nillion
+python3 upload_to_nildb.py --collection-id <collection_id>
+
+# Upload single patient by DID
+python3 upload_to_nildb.py --collection-id <collection_id> --did did:nil:03a1b2c3d4...
+
+# Upload from custom directory
+python3 upload_to_nildb.py --collection-id <collection_id> --dir custom_output/
+
+# Save upload manifest to custom file
+python3 upload_to_nildb.py --collection-id <collection_id> --save-manifest manifest.json
+
+# Use custom nilDB nodes
+python3 upload_to_nildb.py --collection-id <collection_id> --nildb-nodes https://node1.com https://node2.com
+```
+
+**Required Environment Variables:**
+- `NILLION_BUILDER_PRIVATE_KEY`: Builder's private key for creating NUCs (Nillion User Credentials)
+- `NILLION_COLLECTION_ID` (optional): Default collection ID
+
+**How it works:**
+1. Creates one NUC per synthetic patient using their secp256k1 private key
+2. Uploads both questionnaire responses (Flo + DAO) to the specified collection
+3. Generates an upload manifest JSON with all document IDs
+
 ### No Tests
 This project does not currently have tests.
 
