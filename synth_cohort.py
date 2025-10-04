@@ -14,6 +14,14 @@ from typing import List, Dict, Any
 from pathlib import Path
 import random
 import numpy as np
+import hashlib
+import hmac
+from ecdsa import SigningKey, SECP256k1
+from mnemonic import Mnemonic
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class SyntheticCohortGenerator:
@@ -49,9 +57,93 @@ class SyntheticCohortGenerator:
         self.cycle_length_mean = 28
         self.cycle_length_std = 3
 
+        # Initialize HD wallet from environment seed
+        self.hd_seed = self._get_hd_seed_from_env()
+        self.current_key_index = 0
+
+    def _get_hd_seed_from_env(self) -> bytes:
+        """
+        Get HD wallet seed from environment variable or generate deterministic one
+
+        Returns:
+            64-byte seed for HD wallet derivation
+        """
+        env_seed = os.getenv('HD_WALLET_SEED')
+
+        if env_seed:
+            # Use provided mnemonic or hex seed
+            if ' ' in env_seed:
+                # Treat as BIP39 mnemonic
+                mnemo = Mnemonic("english")
+                if not mnemo.check(env_seed):
+                    raise ValueError("Invalid BIP39 mnemonic in HD_WALLET_SEED")
+                return mnemo.to_seed(env_seed)
+            else:
+                # Treat as hex-encoded seed
+                try:
+                    seed_bytes = bytes.fromhex(env_seed)
+                    if len(seed_bytes) < 16:
+                        raise ValueError("HD_WALLET_SEED too short (minimum 16 bytes)")
+                    return seed_bytes
+                except ValueError as e:
+                    raise ValueError(f"Invalid HD_WALLET_SEED: {e}")
+        else:
+            # Generate deterministic seed from random seed for reproducibility
+            # This ensures the same --seed parameter produces the same DIDs
+            seed_bytes = str(random.getstate()).encode('utf-8')
+            return hashlib.sha512(seed_bytes).digest()
+
+    def _derive_child_key(self, index: int) -> SigningKey:
+        """
+        Derive a child private key from HD wallet using BIP32-like derivation
+
+        Args:
+            index: Child key index
+
+        Returns:
+            secp256k1 SigningKey
+        """
+        # Simple BIP32-like derivation: HMAC-SHA512(master_seed, index)
+        index_bytes = index.to_bytes(4, byteorder='big')
+        hmac_result = hmac.new(
+            self.hd_seed,
+            b"did:nil:" + index_bytes,
+            hashlib.sha512
+        ).digest()
+
+        # Use first 32 bytes as private key
+        private_key_bytes = hmac_result[:32]
+
+        # Create secp256k1 signing key
+        signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
+        return signing_key
+
     def generate_patient_id(self) -> str:
-        """Generate random UID for patient"""
-        return f"did:welshare:{uuid.uuid4()}"
+        """
+        Generate deterministic DID from HD wallet-derived secp256k1 key
+
+        Returns:
+            DID in format did:nil:{compressed_public_key_hex}
+        """
+        # Derive next key from HD wallet
+        signing_key = self._derive_child_key(self.current_key_index)
+        self.current_key_index += 1
+
+        # Get compressed public key (33 bytes: 02/03 prefix + 32 bytes x-coordinate)
+        verifying_key = signing_key.get_verifying_key()
+        public_key_bytes = verifying_key.to_string()  # 64 bytes uncompressed
+
+        # Compress public key: prefix + x-coordinate
+        x_coord = public_key_bytes[:32]
+        y_coord = public_key_bytes[32:]
+        y_is_odd = y_coord[-1] & 1
+        prefix = b'\x03' if y_is_odd else b'\x02'
+        compressed_public_key = prefix + x_coord
+
+        # Convert to hex for DID
+        pubkey_hex = compressed_public_key.hex()
+
+        return f"did:nil:{pubkey_hex}"
 
     def generate_delivery_method(self, patient_idx: int) -> str:
         """Assign insulin delivery method (65% pump, 35% injection)"""
@@ -308,6 +400,24 @@ def clean_output_dir():
         print(f"Output directory does not exist: {OUTPUT_DIR}/")
 
 
+def generate_seed_phrase():
+    """Generate a new random BIP39 mnemonic seed phrase"""
+    mnemo = Mnemonic("english")
+    # Generate 256 bits of entropy for 24-word mnemonic
+    mnemonic = mnemo.generate(strength=256)
+
+    print("Generated new BIP39 seed phrase (24 words):")
+    print("=" * 70)
+    print(mnemonic)
+    print("=" * 70)
+    print("\nTo use this seed phrase:")
+    print("1. Copy the phrase above")
+    print("2. Add it to your .env file:")
+    print(f'   HD_WALLET_SEED="{mnemonic}"')
+    print("\nWARNING: Store this phrase securely! Anyone with this phrase")
+    print("         can derive all patient DIDs from your cohorts.")
+
+
 def main():
     """Main CLI execution"""
     parser = argparse.ArgumentParser(
@@ -320,6 +430,7 @@ Examples:
   %(prog)s 150 --seed 123   Generate 150 patients with seed 123
   %(prog)s 187 --stats      Show statistics only
   %(prog)s clean            Clean output directory
+  %(prog)s generate-seed    Generate new BIP39 seed phrase for HD wallet
 
 Output:
   Each patient generates 2 files: {patient_id}_flo.json and {patient_id}_dao.json
@@ -331,7 +442,7 @@ Output:
         'command_or_size',
         nargs='?',
         default='187',
-        help='Command (clean) or cohort size (default: 187)'
+        help='Command (clean, generate-seed) or cohort size (default: 187)'
     )
 
     parser.add_argument(
@@ -358,6 +469,11 @@ Output:
     # Handle clean command
     if args.command_or_size == 'clean':
         clean_output_dir()
+        return
+
+    # Handle generate-seed command
+    if args.command_or_size == 'generate-seed':
+        generate_seed_phrase()
         return
 
     # Parse cohort size

@@ -8,6 +8,9 @@ env/
 venv/
 ENV/
 
+# Environment variables
+.env
+
 # Generated output
 output/
 

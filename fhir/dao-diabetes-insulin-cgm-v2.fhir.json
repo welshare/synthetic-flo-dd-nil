@@ -1,12 +1,13 @@
 {
   "resourceType": "Questionnaire",
   "id": "dao-diabetes-insulin-cgm-v2",
-  "url": "https://welshare.health/hpmp/questionnaire/dao-diabetes-insulin-cgm-v2",
+  "url": "https://welshare.app/questionnaire/dao-diabetes-insulin-cgm-v2",
   "version": "2.0.0",
   "status": "active",
-  "name": "DiabetesDAOInsulinCGM",
-  "title": "DiabetesDAO — Insulin & Nighttime CGM (Demo, corrected)",
+  "name": "DiabetesDAO Insulin CGM",
+  "title": "DiabetesDAO - Insulin & Nighttime CGM (Demo)",
   "publisher": "Welshare (Demo)",
+  "description": "A simplified version of the DiabetesDAO insulin and CGM questionnaire, focusing on insulin delivery method, basal dose, nighttime CGM average, and age.",
   "date": "2025-10-02",
   "item": [
     {

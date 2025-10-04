@@ -1,13 +1,14 @@
 {
   "resourceType": "Questionnaire",
   "id": "flo-cycle-v2",
-  "url": "https://welshare.health/hpmp/questionnaire/flo-cycle-v2",
+  "url": "https://welshare.app/questionnaire/flo-cycle-v2",
   "version": "1.0.1",
   "status": "active",
   "name": "FloCycle",
-  "title": "Flo App — Menstrual Cycle (Demo, corrected)",
+  "title": "Flo App - Menstrual Cycle (Demo)",
   "publisher": "Welshare (Demo)",
   "date": "2025-10-02",
+  "description": "A simplified version of the Flo App menstrual cycle questionnaire, focusing on last menstrual period and typical cycle length.",
   "item": [
     {
       "linkId": "lmp",
