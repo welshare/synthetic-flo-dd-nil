@@ -7,6 +7,8 @@ Exports generated QuestionnaireResponse files to Nillion's encrypted storage
 import json
 import os
 import argparse
+import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any
 from dotenv import load_dotenv
@@ -14,98 +16,197 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+from secretvaults.builder import SecretVaultBuilderClient
+from secretvaults.user import SecretVaultUserClient
+from secretvaults.common.keypair import Keypair
+from secretvaults.common.blindfold import BlindfoldFactoryConfig, BlindfoldOperation
+from secretvaults.dto.data import CreateOwnedDataRequest
+from secretvaults.dto.users import AclDto
+from nuc.builder import NucTokenBuilder
+from nuc.token import Command
+from secretvaults.common.nuc_cmd import NucCmd 
 
-from secretvaults import SecretVaults, NillionUserCredentials
 
+
+def into_seconds_from_now(minutes: int) -> int:
+    """Convert minutes from now into Unix timestamp"""
+    return int((datetime.now() + timedelta(minutes=minutes)).timestamp())
 
 
 class NillionUploader:
     """Uploads synthetic cohort data to Nillion nilDB"""
 
-    def __init__(self, builder_private_key: str, collection_id: str, nildb_nodes: List[str] = None):
+    def __init__(
+        self,
+        builder_private_key: str,
+        collection_id: str,
+        nilchain_url: str = None,
+        nilauth_url: str = None,
+        nildb_nodes: List[str] = None
+    ):
         """
         Initialize Nillion uploader
 
         Args:
-            builder_private_key: Builder's private key for creating NUCs
+            builder_private_key: Builder's private key (hex format)
             collection_id: Target collection ID in nilDB
-            nildb_nodes: List of nilDB node URLs (defaults to 3 standard nodes)
+            nilchain_url: Nillion chain URL
+            nilauth_url: Nillion auth URL
+            nildb_nodes: List of nilDB node URLs
         """
-        self.builder_private_key = builder_private_key
+        self.builder_keypair = Keypair.from_hex(builder_private_key)
         self.collection_id = collection_id
 
-        # Default nilDB nodes (update based on Nillion docs)
+        # Default URLs for staging environment
+        self.nilchain_url = nilchain_url or os.getenv("NILCHAIN_URL", "http://rpc.testnet.nilchain-rpc-proxy.nilogy.xyz")
+        self.nilauth_url = nilauth_url or os.getenv("NILAUTH_URL", "https://nilauth.sandbox.app-cluster.sandbox.nilogy.xyz")
+
+        # Default nilDB nodes
         if nildb_nodes is None:
-            self.nildb_nodes = [
-                "https://nildb-stg-n1.nillion.network",
-                "https://nildb-stg-n2.nillion.network",
-                "https://nildb-stg-n3.nillion.network"
-            ]
+            default_nodes = os.getenv("NILDB_NODES", "")
+            if default_nodes:
+                self.nildb_nodes = default_nodes.split(",")
+            else:
+                self.nildb_nodes = [
+                    "https://nildb-stg-n1.nillion.network",
+                    "https://nildb-stg-n2.nillion.network",
+                    "https://nildb-stg-n3.nillion.network"
+                ]
         else:
             self.nildb_nodes = nildb_nodes
 
-        # Initialize SecretVaults client
-        self.client = SecretVaults(nodes=self.nildb_nodes)
+    async def create_builder_client(self) -> SecretVaultBuilderClient:
+        """Create and initialize builder client"""
+        urls = {
+            "chain": [self.nilchain_url],
+            "auth": self.nilauth_url,
+            "dbs": self.nildb_nodes,
+        }
 
-    def create_nuc_for_user(self, user_private_key: str) -> NillionUserCredentials:
+        builder_client = await SecretVaultBuilderClient.from_options(
+            keypair=self.builder_keypair,
+            urls=urls,
+            blindfold=BlindfoldFactoryConfig(
+                operation=BlindfoldOperation.STORE,
+                use_cluster_key=True,
+            ),
+        )
+        return builder_client
+
+    async def create_user_client(self, user_private_key: str) -> SecretVaultUserClient:
         """
-        Create Nillion User Credentials (NUC) for a synthetic patient
+        Create user client from patient's private key
 
         Args:
             user_private_key: Patient's secp256k1 private key (hex)
 
         Returns:
-            NillionUserCredentials object
+            SecretVaultUserClient
         """
-        # Create NUC using builder's key to authorize the user's key
-        nuc = self.client.create_user_credentials(
-            builder_private_key=self.builder_private_key,
-            user_private_key=user_private_key
-        )
-        return nuc
+        user_keypair = Keypair.from_hex(user_private_key)
 
-    def upload_patient_responses(
+        user_client = await SecretVaultUserClient.from_options(
+            keypair=user_keypair,
+            base_urls=self.nildb_nodes,
+            blindfold=BlindfoldFactoryConfig(
+                operation=BlindfoldOperation.STORE,
+                use_cluster_key=True,
+            ),
+        )
+        return user_client
+
+    async def upload_patient_responses(
         self,
+        builder_client: SecretVaultBuilderClient,
         patient_id: str,
+        user_private_key: str,
         flo_response: Dict[str, Any],
         dao_response: Dict[str, Any],
-        nuc: NillionUserCredentials
     ) -> Dict[str, str]:
         """
         Upload patient's questionnaire responses to nilDB
 
         Args:
+            builder_client: Builder client instance
             patient_id: Patient DID
+            user_private_key: Patient's private key
             flo_response: Flo cycle questionnaire response
             dao_response: DiabetesDAO questionnaire response
-            nuc: Nillion User Credentials for this patient
 
         Returns:
             Dict with document IDs for uploaded responses
         """
+        # Create user client for this patient
+        user_client = await self.create_user_client(user_private_key)
+
+        # Refresh builder's root token
+        await builder_client.refresh_root_token()
+        root_token_envelope = builder_client.root_token
+
+        # Create delegation token for data creation
+        delegation_token = (
+            NucTokenBuilder.extending(root_token_envelope)
+            .command(Command(NucCmd.NIL_DB_DATA_CREATE.value.split(".")))
+            .audience(user_client.id)
+            .expires_at(datetime.fromtimestamp(into_seconds_from_now(60)))
+            .build(builder_client.keypair.private_key())
+        )
+
         # Upload Flo response
-        flo_doc_id = self.client.store_document(
-            collection_id=self.collection_id,
-            document=flo_response,
-            user_credentials=nuc,
-            metadata={"patient_id": patient_id, "questionnaire": "flo-cycle-v2"}
+        flo_request = CreateOwnedDataRequest(
+            collection=self.collection_id,
+            owner=user_client.id,
+            data=[flo_response],
+            acl=AclDto(
+                grantee=builder_client.keypair.to_did_string(),
+                read=True,
+                write=False,
+                execute=True,
+            ),
+        )
+
+        flo_result = await user_client.create_data(
+            delegation=delegation_token,
+            body=flo_request,
+        )
+
+        # Refresh delegation token for second upload
+        await builder_client.refresh_root_token()
+        delegation_token = (
+            NucTokenBuilder.extending(builder_client.root_token)
+            .command(Command(NucCmd.NIL_DB_DATA_CREATE.value.split(".")))
+            .audience(user_client.id)
+            .expires_at(datetime.fromtimestamp(into_seconds_from_now(60)))
+            .build(builder_client.keypair.private_key())
         )
 
         # Upload DAO response
-        dao_doc_id = self.client.store_document(
-            collection_id=self.collection_id,
-            document=dao_response,
-            user_credentials=nuc,
-            metadata={"patient_id": patient_id, "questionnaire": "dao-diabetes-insulin-cgm-v2"}
+        dao_request = CreateOwnedDataRequest(
+            collection=self.collection_id,
+            owner=user_client.id,
+            data=[dao_response],
+            acl=AclDto(
+                grantee=builder_client.keypair.to_did_string(),
+                read=True,
+                write=False,
+                execute=True,
+            ),
         )
+
+        dao_result = await user_client.create_data(
+            delegation=delegation_token,
+            body=dao_request,
+        )
+
+        await user_client.close()
 
         return {
             "patient_id": patient_id,
-            "flo_document_id": flo_doc_id,
-            "dao_document_id": dao_doc_id
+            "flo_document_id": flo_result.ids[0] if flo_result.ids else None,
+            "dao_document_id": dao_result.ids[0] if dao_result.ids else None,
         }
 
-    def upload_single_patient(self, patient_did: str, output_dir: Path) -> Dict[str, str]:
+    async def upload_single_patient(self, patient_did: str, output_dir: Path) -> Dict[str, str]:
         """
         Upload a single patient's responses to nilDB
 
@@ -145,20 +246,23 @@ class NillionUploader:
         with open(dao_file, 'r') as f:
             dao_response = json.load(f)
 
-        # Create NUC for this patient
-        nuc = self.create_nuc_for_user(key_material["private_key"])
+        # Create builder client and upload
+        builder_client = await self.create_builder_client()
 
-        # Upload responses
-        result = self.upload_patient_responses(
-            patient_id=patient_did,
-            flo_response=flo_response,
-            dao_response=dao_response,
-            nuc=nuc
-        )
+        try:
+            result = await self.upload_patient_responses(
+                builder_client=builder_client,
+                patient_id=patient_did,
+                user_private_key=key_material["private_key"],
+                flo_response=flo_response,
+                dao_response=dao_response,
+            )
+        finally:
+            await builder_client.close()
 
         return result
 
-    def upload_cohort_from_directory(self, output_dir: Path) -> List[Dict[str, str]]:
+    async def upload_cohort_from_directory(self, output_dir: Path) -> List[Dict[str, str]]:
         """
         Upload all patients from output directory to nilDB
 
@@ -180,57 +284,59 @@ class NillionUploader:
         print(f"Found {total_patients} patients to upload")
         print("=" * 70)
 
-        for idx, key_file in enumerate(key_files, 1):
-            # Extract patient ID from filename
-            patient_pubkey = key_file.stem.replace(".key", "")
-            patient_id = f"did:nil:{patient_pubkey}"
+        # Create builder client once for all uploads
+        builder_client = await self.create_builder_client()
 
-            print(f"[{idx}/{total_patients}] Uploading patient: {patient_id[:30]}...")
+        try:
+            for idx, key_file in enumerate(key_files, 1):
+                # Extract patient ID from filename
+                patient_pubkey = key_file.stem.replace(".key", "")
+                patient_id = f"did:nil:{patient_pubkey}"
 
-            # Load key material
-            with open(key_file, 'r') as f:
-                key_material = json.load(f)
+                print(f"[{idx}/{total_patients}] Uploading patient: {patient_id[:50]}...")
 
-            # Load questionnaire responses
-            flo_file = output_dir / f"{patient_pubkey}_flo.json"
-            dao_file = output_dir / f"{patient_pubkey}_dao.json"
+                # Load key material
+                with open(key_file, 'r') as f:
+                    key_material = json.load(f)
 
-            if not flo_file.exists() or not dao_file.exists():
-                print(f"  ERROR: Missing response files for {patient_id}")
-                continue
+                # Load questionnaire responses
+                flo_file = output_dir / f"{patient_pubkey}_flo.json"
+                dao_file = output_dir / f"{patient_pubkey}_dao.json"
 
-            with open(flo_file, 'r') as f:
-                flo_response = json.load(f)
+                if not flo_file.exists() or not dao_file.exists():
+                    print(f"  ERROR: Missing response files for {patient_id}")
+                    continue
 
-            with open(dao_file, 'r') as f:
-                dao_response = json.load(f)
+                with open(flo_file, 'r') as f:
+                    flo_response = json.load(f)
 
-            # Create NUC for this patient
-            try:
-                nuc = self.create_nuc_for_user(key_material["private_key"])
-            except Exception as e:
-                print(f"  ERROR: Failed to create NUC: {e}")
-                continue
+                with open(dao_file, 'r') as f:
+                    dao_response = json.load(f)
 
-            # Upload responses
-            try:
-                result = self.upload_patient_responses(
-                    patient_id=patient_id,
-                    flo_response=flo_response,
-                    dao_response=dao_response,
-                    nuc=nuc
-                )
-                upload_results.append(result)
-                print(f"  ✓ Uploaded (Flo: {result['flo_document_id'][:16]}..., DAO: {result['dao_document_id'][:16]}...)")
-            except Exception as e:
-                print(f"  ERROR: Upload failed: {e}")
-                continue
+                # Upload responses
+                try:
+                    result = await self.upload_patient_responses(
+                        builder_client=builder_client,
+                        patient_id=patient_id,
+                        user_private_key=key_material["private_key"],
+                        flo_response=flo_response,
+                        dao_response=dao_response,
+                    )
+                    upload_results.append(result)
+                    flo_id = result['flo_document_id'][:16] if result['flo_document_id'] else 'N/A'
+                    dao_id = result['dao_document_id'][:16] if result['dao_document_id'] else 'N/A'
+                    print(f"  ✓ Uploaded (Flo: {flo_id}..., DAO: {dao_id}...)")
+                except Exception as e:
+                    print(f"  ERROR: Upload failed: {e}")
+                    continue
+        finally:
+            await builder_client.close()
 
         return upload_results
 
 
-def main():
-    """Main CLI execution"""
+async def async_main():
+    """Async main execution"""
     parser = argparse.ArgumentParser(
         description='Upload synthetic T1D cohort to Nillion nilDB',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -251,6 +357,9 @@ Examples:
 Environment Variables:
   NILLION_BUILDER_PRIVATE_KEY    Builder's private key for creating NUCs (required)
   NILLION_COLLECTION_ID          Default collection ID (optional, can use --collection-id)
+  NILCHAIN_URL                   Nillion chain URL (optional)
+  NILAUTH_URL                    Nillion auth URL (optional)
+  NILDB_NODES                    Comma-separated nilDB node URLs (optional)
 
 Output:
   Creates upload manifest JSON file with document IDs for all uploaded responses
@@ -330,7 +439,7 @@ Output:
             print(f"\nUploading single patient: {args.did}")
             print("=" * 70)
 
-            result = uploader.upload_single_patient(args.did, output_dir)
+            result = await uploader.upload_single_patient(args.did, output_dir)
 
             print(f"\n✓ Upload successful!")
             print(f"  Patient: {result['patient_id']}")
@@ -352,7 +461,7 @@ Output:
 
         else:
             # Upload entire cohort
-            upload_results = uploader.upload_cohort_from_directory(output_dir)
+            upload_results = await uploader.upload_cohort_from_directory(output_dir)
 
             print("\n" + "=" * 70)
             print(f"Upload complete: {len(upload_results)} patients uploaded")
@@ -375,6 +484,11 @@ Output:
         import traceback
         traceback.print_exc()
         exit(1)
+
+
+def main():
+    """Main CLI entry point"""
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
