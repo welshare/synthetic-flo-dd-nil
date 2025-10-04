@@ -7,8 +7,11 @@ Generates FHIR QuestionnaireResponse resources for synthetic patients
 import json
 import uuid
 import argparse
+import os
+import shutil
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
+from pathlib import Path
 import random
 import numpy as np
 
@@ -287,6 +290,24 @@ class SyntheticCohortGenerator:
         return stats
 
 
+# Output directory management
+OUTPUT_DIR = Path("output")
+
+
+def ensure_output_dir():
+    """Create output directory if it doesn't exist"""
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def clean_output_dir():
+    """Remove all files from output directory"""
+    if OUTPUT_DIR.exists():
+        shutil.rmtree(OUTPUT_DIR)
+        print(f"Cleaned output directory: {OUTPUT_DIR}/")
+    else:
+        print(f"Output directory does not exist: {OUTPUT_DIR}/")
+
+
 def main():
     """Main CLI execution"""
     parser = argparse.ArgumentParser(
@@ -295,25 +316,25 @@ def main():
         epilog="""
 Examples:
   %(prog)s 187                    Generate 187 patients (default)
-  %(prog)s 200 -o cohort.json    Generate 200 patients, save to cohort.json
+  %(prog)s 200 -o cohort.json    Generate 200 patients, save to output/cohort.json
   %(prog)s 150 --seed 123         Generate 150 patients with seed 123
   %(prog)s 187 --stats            Show statistics only
+  %(prog)s clean                  Clean output directory
         """
     )
 
     parser.add_argument(
-        'cohort_size',
-        type=int,
+        'command_or_size',
         nargs='?',
-        default=187,
-        help='Number of patients to generate (default: 187)'
+        default='187',
+        help='Command (clean) or cohort size (default: 187)'
     )
 
     parser.add_argument(
         '-o', '--output',
         type=str,
         default='synthetic_cohort.json',
-        help='Output file path (default: synthetic_cohort.json)'
+        help='Output filename (saved to output/ directory, default: synthetic_cohort.json)'
     )
 
     parser.add_argument(
@@ -337,16 +358,31 @@ Examples:
 
     args = parser.parse_args()
 
+    # Handle clean command
+    if args.command_or_size == 'clean':
+        clean_output_dir()
+        return
+
+    # Parse cohort size
+    try:
+        cohort_size = int(args.command_or_size)
+    except ValueError:
+        parser.error(f"Invalid command or cohort size: {args.command_or_size}")
+
     # Validate cohort size
-    if args.cohort_size < 1:
+    if cohort_size < 1:
         parser.error("Cohort size must be at least 1")
+
+    # Ensure output directory exists
+    if not args.stats:
+        ensure_output_dir()
 
     # Generate cohort
     if not args.quiet:
         print(f"Generating synthetic T1D cohort...")
         print("=" * 70)
 
-    generator = SyntheticCohortGenerator(cohort_size=args.cohort_size, seed=args.seed)
+    generator = SyntheticCohortGenerator(cohort_size=cohort_size, seed=args.seed)
     cohort = generator.generate_cohort()
     stats = generator.calculate_statistics(cohort)
 
@@ -371,12 +407,13 @@ Examples:
 
     # Save cohort
     if not args.stats:
-        with open(args.output, 'w') as f:
+        output_path = OUTPUT_DIR / args.output
+        with open(output_path, 'w') as f:
             json.dump(cohort, f, indent=2)
 
         if not args.quiet:
             print("\n" + "=" * 70)
-            print(f"Saved {len(cohort)} patient records to {args.output}")
+            print(f"Saved {len(cohort)} patient records to {output_path}")
 
 
 if __name__ == "__main__":

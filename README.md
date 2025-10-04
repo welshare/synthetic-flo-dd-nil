@@ -42,16 +42,21 @@ Generate custom cohort size:
 python3 synth_cohort.py 200
 ```
 
+Clean output directory:
+```bash
+python3 synth_cohort.py clean
+```
+
 ### Options
 
 ```bash
-python3 synth_cohort.py [cohort_size] [options]
+python3 synth_cohort.py [command|cohort_size] [options]
 
 Arguments:
-  cohort_size              Number of patients to generate (default: 187)
+  command|cohort_size     Command (clean) or number of patients (default: 187)
 
 Options:
-  -o, --output FILE       Output file path (default: synthetic_cohort.json)
+  -o, --output FILE       Output filename (saved to output/, default: synthetic_cohort.json)
   --seed SEED             Random seed for reproducibility (default: 42)
   --stats                 Show statistics only (no file output)
   --quiet                 Suppress output messages
@@ -61,10 +66,10 @@ Options:
 ### Examples
 
 ```bash
-# Generate 200 patients
+# Generate 200 patients (saves to output/synthetic_cohort.json)
 python3 synth_cohort.py 200
 
-# Save to custom file
+# Save to custom filename in output/
 python3 synth_cohort.py 187 -o my_cohort.json
 
 # Use different random seed
@@ -75,7 +80,14 @@ python3 synth_cohort.py 187 --stats
 
 # Quiet mode
 python3 synth_cohort.py 200 --quiet
+
+# Clean all generated files
+python3 synth_cohort.py clean
 ```
+
+### Output Directory
+
+All generated files are saved to the `output/` directory, which is git-ignored. Use `python3 synth_cohort.py clean` to remove all generated files.
 
 ## Output Structure
 

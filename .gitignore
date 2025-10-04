@@ -8,9 +8,8 @@ env/
 venv/
 ENV/
 
-# Generated data (optional - comment out if you want to commit synthetic data)
-# synthetic_cohort.json
-# *.json (except fhir/*.json)
+# Generated output
+output/
 
 # IDE
 .vscode/
