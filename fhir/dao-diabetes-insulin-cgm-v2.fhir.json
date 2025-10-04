@@ -1,0 +1,89 @@
+{
+  "resourceType": "Questionnaire",
+  "id": "dao-diabetes-insulin-cgm-v2",
+  "url": "https://welshare.health/hpmp/questionnaire/dao-diabetes-insulin-cgm-v2",
+  "version": "2.0.0",
+  "status": "active",
+  "name": "DiabetesDAOInsulinCGM",
+  "title": "DiabetesDAO — Insulin & Nighttime CGM (Demo, corrected)",
+  "publisher": "Welshare (Demo)",
+  "date": "2025-10-02",
+  "item": [
+    {
+      "linkId": "delivery-method",
+      "text": "Which insulin delivery method do you use?",
+      "type": "choice",
+      "required": true,
+      "code": [
+        {
+          "system": "http://loinc.org",
+          "code": "41936-6",
+          "display": "Type of Insulin delivery device"
+        }
+      ],
+      "answerOption": [
+        { "valueString": "Insulin pump" },
+        { "valueString": "Multiple daily injections" }
+      ]
+    },
+    {
+      "linkId": "basal-dose-24h",
+      "text": "What is your total basal insulin over 24 hours (units/day)?",
+      "type": "decimal",
+      "required": true,
+      "code": [
+        {
+          "system": "http://loinc.org",
+          "code": "41944-0",
+          "display": "Current medication 24 hour Totals basal"
+        }
+      ],
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-unit",
+          "valueCoding": {
+            "system": "http://unitsofmeasure.org",
+            "code": "U",
+            "display": "unit"
+          }
+        }
+      ]
+    },
+    {
+      "linkId": "cgm-avg-0006",
+      "text": "What was your average CGM glucose from 00:00-06:00 (nighttime) over your usual reporting period?",
+      "type": "decimal",
+      "required": true,
+      "code": [
+        {
+          "system": "http://loinc.org",
+          "code": "97507-8",
+          "display": "Average glucose [Mass/volume] in Interstitial fluid during Reporting Period"
+        }
+      ],
+      "extension": [
+        {
+          "url": "https://welshare.health/fhir/StructureDefinition/time-window",
+          "valueString": "00:00-06:00"
+        },
+        {
+          "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-unit",
+          "valueCoding": {
+            "system": "http://unitsofmeasure.org",
+            "code": "mg/dL",
+            "display": "mg/dL"
+          }
+        }
+      ]
+    },
+    {
+      "linkId": "age",
+      "text": "Age (years)",
+      "type": "integer",
+      "required": false,
+      "code": [
+        { "system": "http://loinc.org", "code": "30525-0", "display": "Age" }
+      ]
+    }
+  ]
+}

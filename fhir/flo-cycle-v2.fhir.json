@@ -1,0 +1,39 @@
+{
+  "resourceType": "Questionnaire",
+  "id": "flo-cycle-v2",
+  "url": "https://welshare.health/hpmp/questionnaire/flo-cycle-v2",
+  "version": "1.0.1",
+  "status": "active",
+  "name": "FloCycle",
+  "title": "Flo App — Menstrual Cycle (Demo, corrected)",
+  "publisher": "Welshare (Demo)",
+  "date": "2025-10-02",
+  "item": [
+    {
+      "linkId": "lmp",
+      "text": "When did your last menstrual period begin?",
+      "type": "date",
+      "required": true,
+      "code": [
+        {
+          "system": "http://loinc.org",
+          "code": "8665-2",
+          "display": "Last menstrual period start date"
+        }
+      ]
+    },
+    {
+      "linkId": "cycle-length",
+      "text": "What is your typical cycle length (days)?",
+      "type": "integer",
+      "required": false,
+      "code": [
+        {
+          "system": "http://loinc.org",
+          "code": "64700-8",
+          "display": "Usual menstrual cycle length [PhenX]"
+        }
+      ]
+    }
+  ]
+}
