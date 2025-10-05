@@ -303,7 +303,7 @@ class NillionUploader:
             result = await self.upload_patient_responses(
                 builder_client=builder_client,
                 patient_id=patient_did,
-                user_private_key=key_material["private_key"],
+                user_private_key=key_material["nillion_private_key"],
                 flo_response=flo_response,
                 dao_response=dao_response,
             )
@@ -364,7 +364,7 @@ class NillionUploader:
                     result = await self.upload_patient_responses(
                         builder_client=builder_client,
                         patient_id=patient_id,
-                        user_private_key=key_material["private_key"],
+                        user_private_key=key_material["nillion_private_key"],
                         flo_response=flo_response,
                         dao_response=dao_response,
                     )
@@ -502,7 +502,7 @@ Output:
 
             result = await uploader.delete_document(
                 user_did=args.did,
-                user_private_key=key_material["private_key"],
+                user_private_key=key_material["nillion_private_key"],
                 document_id=args.delete
             )
 

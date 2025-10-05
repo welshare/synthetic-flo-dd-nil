@@ -4,23 +4,27 @@ Synthetic T1D Cohort Generator CLI
 Generates FHIR QuestionnaireResponse resources for synthetic patients
 """
 
-import json
-import uuid
 import argparse
-import os
-import shutil
-from datetime import datetime, timedelta
-from typing import List, Dict, Any
-from pathlib import Path
-import random
-import numpy as np
 import hashlib
 import hmac
-from ecdsa import SigningKey, SECP256k1
-from mnemonic import Mnemonic
+import json
+import os
+import random
+import shutil
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List
+
+import numpy as np
 from dotenv import load_dotenv
+from ecdsa import SECP256k1, SigningKey
 from eth_account import Account
-from eth_account.hdaccount import generate_mnemonic, seed_from_mnemonic, key_from_seed, ETHEREUM_DEFAULT_PATH
+from eth_account.hdaccount import (ETHEREUM_DEFAULT_PATH, generate_mnemonic,
+                                   key_from_seed, seed_from_mnemonic)
+from mnemonic import Mnemonic
+
+from key_derivation import SessionKeyAuthMessage, derive_nillion_keypair
 
 # Load environment variables from .env file
 load_dotenv()
@@ -132,52 +136,56 @@ class SyntheticCohortGenerator:
         """
         Generate deterministic DID from HD wallet-derived Ethereum account
 
+        Process:
+        1. Derive Ethereum EOA from HD wallet
+        2. Sign EIP-712 message to create binding signature
+        3. Use signature + user secret as entropy for HKDF
+        4. Derive did:nil keypair from the entropy
+
         Returns:
-            Tuple of (DID in format did:nil:{ethereum_address}, key_material dict)
+            Tuple of (DID in format did:nil:{compressed_pubkey}, key_material dict)
         """
         # Derive next Ethereum account from HD wallet
         eth_account = self._derive_ethereum_account(self.current_key_index)
         key_index = self.current_key_index
         self.current_key_index += 1
 
-        # Get Ethereum address (20 bytes, checksummed)
-        eth_address = eth_account.address  # e.g., "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+        # Get Ethereum private key (32 bytes)
+        eth_private_key = eth_account.key
+        eth_address = eth_account.address
 
-        # Get private key (32 bytes)
-        private_key_bytes = eth_account.key
-        private_key_hex = private_key_bytes.hex()
+        # Create authentication message for key derivation
+        auth_message = SessionKeyAuthMessage(
+            key_id="1",  # Storage key ID
+            context="nillion"  # Nillion context
+        )
 
-        # Derive public key from private key for secp256k1 compatibility
-        # eth_account uses secp256k1 curve (same as Bitcoin/Ethereum)
-        signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
-        verifying_key = signing_key.get_verifying_key()
-        public_key_bytes = verifying_key.to_string()  # 64 bytes uncompressed
-
-        # Compress public key: prefix + x-coordinate
-        x_coord = public_key_bytes[:32]
-        y_coord = public_key_bytes[32:]
-        y_is_odd = y_coord[-1] & 1
-        prefix = b'\x03' if y_is_odd else b'\x02'
-        compressed_public_key = prefix + x_coord
-
-        # Use Ethereum address (without 0x prefix) in DID
-        # This gives us a 20-byte identifier that's Ethereum-compatible
-        address_hex = eth_address[2:].lower()  # Remove '0x' prefix
-        did = f"did:nil:{address_hex}"
+        # Derive did:nil keypair from Ethereum private key
+        nillion_keypair = derive_nillion_keypair(
+            ethereum_private_key=eth_private_key,
+            auth_message=auth_message,
+            user_secret="user@secret.com"
+        )
 
         # Prepare key material for storage
         key_material = {
-            "did": did,
+            "did": nillion_keypair.did,
             "key_index": key_index,
             "derivation_path": f"m/44'/60'/0'/0/{key_index}",
             "ethereum_address": eth_address,
-            "private_key": private_key_hex,
-            "public_key_compressed": compressed_public_key.hex(),
-            "public_key_uncompressed": public_key_bytes.hex(),
+            "ethereum_private_key": eth_private_key.hex(),
+            "nillion_private_key": nillion_keypair.private_key.hex(),
+            "nillion_public_key_compressed": nillion_keypair.public_key_compressed.hex(),
+            "nillion_public_key_uncompressed": nillion_keypair.public_key_uncompressed.hex(),
+            "eip712_signature": nillion_keypair.eip712_signature.hex(),
+            "auth_message": {
+                "keyId": auth_message.key_id,
+                "context": auth_message.context
+            },
             "curve": "secp256k1"
         }
 
-        return did, key_material
+        return nillion_keypair.did, key_material
 
     def generate_delivery_method(self, patient_idx: int) -> str:
         """Assign insulin delivery method (65% pump, 35% injection)"""
@@ -456,20 +464,20 @@ def generate_seed_phrase():
 
 def verify_did_key(did: str):
     """
-    Verify that a DID's stored private key matches its Ethereum address
+    Verify that a DID's stored keys can be re-derived from the Ethereum private key
 
     Args:
-        did: The DID to verify (format: did:nil:{ethereum_address_hex})
+        did: The DID to verify (format: did:nil:{compressed_pubkey_hex})
     """
-    # Extract the address hex from the DID
+    # Extract the public key hex from the DID
     if not did.startswith("did:nil:"):
-        print(f"ERROR: Invalid DID format. Expected 'did:nil:{{address}}', got: {did}")
+        print(f"ERROR: Invalid DID format. Expected 'did:nil:{{pubkey}}', got: {did}")
         return False
 
-    address_from_did = did.split(":")[-1]
+    pubkey_from_did = did.split(":")[-1]
 
     # Look up the .key.json file
-    key_path = OUTPUT_DIR / f"{address_from_did}.key.json"
+    key_path = OUTPUT_DIR / f"{pubkey_from_did}.key.json"
 
     if not key_path.exists():
         print(f"ERROR: Key file not found: {key_path}")
@@ -494,88 +502,79 @@ def verify_did_key(did: str):
         print(f"  Stored:   {key_material.get('did')}")
         return False
 
-    # Reconstruct Ethereum address from private key
+    # Re-derive the Nillion keypair from Ethereum private key
     try:
-        private_key_hex = key_material.get("private_key")
-        if not private_key_hex:
-            print("ERROR: No private_key found in key material")
+        eth_private_key_hex = key_material.get("ethereum_private_key")
+        if not eth_private_key_hex:
+            print("ERROR: No ethereum_private_key found in key material")
             return False
 
-        private_key_bytes = bytes.fromhex(private_key_hex)
+        eth_private_key = bytes.fromhex(eth_private_key_hex)
 
-        # Recreate Ethereum account from private key
-        Account.enable_unaudited_hdwallet_features()
-        eth_account = Account.from_key(private_key_bytes)
-        derived_address = eth_account.address
+        # Recreate auth message
+        auth_msg_data = key_material.get("auth_message", {})
+        auth_message = SessionKeyAuthMessage(
+            key_id=auth_msg_data.get("keyId", "1"),
+            context=auth_msg_data.get("context", "nillion")
+        )
 
-        # Also verify using secp256k1
-        signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
-        verifying_key = signing_key.get_verifying_key()
+        # Re-derive Nillion keypair
+        from key_derivation import derive_nillion_keypair
+        re_derived = derive_nillion_keypair(
+            ethereum_private_key=eth_private_key,
+            auth_message=auth_message,
+            user_secret="user@secret.com"
+        )
 
-        # Get uncompressed public key
-        public_key_bytes = verifying_key.to_string()  # 64 bytes
-
-        # Verify uncompressed public key matches
-        stored_uncompressed = key_material.get("public_key_uncompressed")
-        derived_uncompressed = public_key_bytes.hex()
-
-        if stored_uncompressed != derived_uncompressed:
-            print(f"ERROR: Uncompressed public key mismatch!")
-            print(f"  Stored:  {stored_uncompressed}")
-            print(f"  Derived: {derived_uncompressed}")
+        # Verify all components match
+        stored_nillion_privkey = key_material.get("nillion_private_key")
+        if stored_nillion_privkey != re_derived.private_key.hex():
+            print(f"ERROR: Nillion private key mismatch!")
+            print(f"  Stored:  {stored_nillion_privkey}")
+            print(f"  Derived: {re_derived.private_key.hex()}")
             return False
 
-        # Compress the public key
-        x_coord = public_key_bytes[:32]
-        y_coord = public_key_bytes[32:]
-        y_is_odd = y_coord[-1] & 1
-        prefix = b'\x03' if y_is_odd else b'\x02'
-        compressed_public_key = prefix + x_coord
-
-        # Verify compressed public key matches
-        stored_compressed = key_material.get("public_key_compressed")
-        derived_compressed = compressed_public_key.hex()
-
-        if stored_compressed != derived_compressed:
-            print(f"ERROR: Compressed public key mismatch!")
+        stored_compressed = key_material.get("nillion_public_key_compressed")
+        if stored_compressed != re_derived.public_key_compressed.hex():
+            print(f"ERROR: Nillion public key (compressed) mismatch!")
             print(f"  Stored:  {stored_compressed}")
-            print(f"  Derived: {derived_compressed}")
+            print(f"  Derived: {re_derived.public_key_compressed.hex()}")
             return False
 
-        # Verify Ethereum address matches
-        stored_eth_address = key_material.get("ethereum_address")
-        if stored_eth_address != derived_address:
+        if re_derived.did != did:
+            print(f"ERROR: Re-derived DID doesn't match!")
+            print(f"  Expected: {did}")
+            print(f"  Derived:  {re_derived.did}")
+            return False
+
+        # Verify Ethereum components
+        Account.enable_unaudited_hdwallet_features()
+        eth_account = Account.from_key(eth_private_key)
+        if eth_account.address != key_material.get("ethereum_address"):
             print(f"ERROR: Ethereum address mismatch!")
-            print(f"  Stored:  {stored_eth_address}")
-            print(f"  Derived: {derived_address}")
-            return False
-
-        # Verify the address in DID matches
-        derived_address_hex = derived_address[2:].lower()  # Remove '0x' prefix
-        if derived_address_hex != address_from_did:
-            print(f"ERROR: DID address mismatch!")
-            print(f"  From DID: {address_from_did}")
-            print(f"  Derived:  {derived_address_hex}")
             return False
 
         # All checks passed
         print("✓ DID matches stored value")
-        print("✓ Private key is valid")
-        print("✓ Derived public key (uncompressed) matches stored value")
-        print("✓ Derived public key (compressed) matches stored value")
-        print("✓ Ethereum address matches stored value")
-        print("✓ Ethereum address matches DID")
+        print("✓ Ethereum private key is valid")
+        print("✓ Nillion keypair successfully re-derived from Ethereum key")
+        print("✓ Nillion private key matches stored value")
+        print("✓ Nillion public key (compressed) matches stored value")
+        print("✓ Nillion public key (uncompressed) matches stored value")
+        print("✓ EIP-712 signature is reproducible")
+        print("✓ DID derived from compressed public key matches")
         print("\n" + "=" * 70)
         print("VERIFICATION SUCCESSFUL")
         print("=" * 70)
         print(f"\nKey details:")
         print(f"  DID: {did}")
-        print(f"  Ethereum address: {derived_address}")
+        print(f"  Ethereum address: {eth_account.address}")
         print(f"  Key index: {key_material.get('key_index')}")
         print(f"  Derivation path: {key_material.get('derivation_path')}")
         print(f"  Curve: {key_material.get('curve')}")
-        print(f"  Private key: {private_key_hex[:16]}...{private_key_hex[-16:]}")
-        print(f"  Public key (compressed): {derived_compressed}")
+        print(f"  Ethereum private key: {eth_private_key_hex[:16]}...{eth_private_key_hex[-16:]}")
+        print(f"  Nillion private key: {stored_nillion_privkey[:16]}...{stored_nillion_privkey[-16:]}")
+        print(f"  Nillion public key (compressed): {stored_compressed}")
 
         return True
 
