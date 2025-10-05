@@ -105,7 +105,7 @@ Each file contains a single FHIR QuestionnaireResponse resource:
 {
   "resourceType": "QuestionnaireResponse",
   "id": "...",
-  "questionnaire": "https://welshare.health/hpmp/questionnaire/flo-cycle-v2",
+  "questionnaire": "38a97cfa-532d-4a38-9541-c9f366a6e1ed",
   "status": "completed",
   "subject": {
     "reference": "did:welshare:..."
@@ -131,7 +131,7 @@ Each file contains a single FHIR QuestionnaireResponse resource:
 {
   "resourceType": "QuestionnaireResponse",
   "id": "...",
-  "questionnaire": "https://welshare.health/hpmp/questionnaire/dao-diabetes-insulin-cgm-v2",
+  "questionnaire": "dbb1ea85-af98-4a86-b2a1-39fb656462da",
   "status": "completed",
   "subject": {
     "reference": "did:welshare:..."
@@ -172,6 +172,123 @@ FHIR Questionnaire resources are located in `fhir/`:
 - `flo-cycle-v2.fhir.json` - Flo App menstrual cycle questionnaire (LOINC: 8665-2, 64700-8)
 - `dao-diabetes-insulin-cgm-v2.fhir.json` - DiabetesDAO insulin/CGM questionnaire (LOINC: 41936-6, 41944-0, 97507-8, 30525-0)
 
+## Uploading to Nillion nilDB
+
+After generating the synthetic cohort, you can upload the questionnaire responses to Nillion's encrypted storage using `upload_to_nildb.py`. The scripts are designed to work sequentially for easier debugging.
+
+### Setup
+
+1. **Configure environment variables** in `.env`:
+```bash
+# Required
+NILLION_BUILDER_PRIVATE_KEY=your_builder_private_key_here
+
+# Optional (use defaults if not specified)
+NILLION_COLLECTION_ID=your_collection_id
+NILCHAIN_URL=http://rpc.testnet.nilchain-rpc-proxy.nilogy.xyz
+NILAUTH_URL=https://nilauth.sandbox.app-cluster.sandbox.nilogy.xyz
+NILDB_NODES=https://nildb-stg-n1.nillion.network,https://nildb-stg-n2.nillion.network,https://nildb-stg-n3.nillion.network
+```
+
+2. **Install additional dependencies** (if not already installed):
+```bash
+pip install -r requirements.txt
+```
+
+### Workflow: Generate → Upload
+
+```bash
+# Step 1: Generate synthetic cohort
+python3 synth_cohort.py 187
+
+# Step 2: Upload entire cohort to Nillion
+python3 upload_to_nildb.py --collection-id <collection_id>
+```
+
+### Upload Options
+
+**Upload entire cohort:**
+```bash
+python3 upload_to_nildb.py --collection-id abc123
+```
+
+**Upload single patient by DID:**
+```bash
+python3 upload_to_nildb.py --collection-id abc123 --did did:nil:03a1b2c3d4e5f6...
+```
+
+**Upload from custom directory:**
+```bash
+python3 upload_to_nildb.py --collection-id abc123 --dir custom_output/
+```
+
+**Save upload manifest to custom file:**
+```bash
+python3 upload_to_nildb.py --collection-id abc123 --save-manifest my_manifest.json
+```
+
+**Use custom nilDB nodes:**
+```bash
+python3 upload_to_nildb.py --collection-id abc123 --nildb-nodes https://node1.com https://node2.com https://node3.com
+```
+
+**Delete a document:**
+```bash
+python3 upload_to_nildb.py --did did:nil:03a1b2c3d4e5f6... --delete <document_id>
+```
+
+### How Upload Works
+
+1. **NUC Creation**: For each synthetic patient, the script creates a Nillion User Credential (NUC) using their secp256k1 private key from the `.key.json` file
+2. **Document Upload**: Both questionnaire responses (Flo + DAO) are uploaded to the specified collection with ACL permissions
+3. **Manifest Generation**: An upload manifest JSON file is created containing all document IDs for later retrieval
+4. **Authentication**: Delete operations use the user's DID and private key to authenticate
+
+### Upload Manifest Format
+
+The upload creates a JSON manifest (`upload_manifest.json` by default) with the following structure:
+
+```json
+{
+  "collection_id": "abc123",
+  "total_patients": 187,
+  "uploads": [
+    {
+      "patient_id": "did:nil:03a1b2c3d4e5f6...",
+      "flo_document_id": "doc_flo_123...",
+      "dao_document_id": "doc_dao_456..."
+    },
+    ...
+  ]
+}
+```
+
+### Common Upload Patterns
+
+**Full pipeline with verification:**
+```bash
+# Clean previous data
+python3 synth_cohort.py clean
+
+# Generate fresh cohort
+python3 synth_cohort.py 187
+
+# Upload to Nillion
+python3 upload_to_nildb.py --collection-id abc123
+
+# Verify manifest was created
+cat upload_manifest.json
+```
+
+**Test with small cohort first:**
+```bash
+# Generate small test cohort
+python3 synth_cohort.py 5 --seed 999
+
+# Upload test cohort
+python3 upload_to_nildb.py --collection-id test_collection --save-manifest test_manifest.json
+```
+
 ## Use Case
 
 This synthetic cohort provides realistic test data for:
@@ -179,3 +296,4 @@ This synthetic cohort provides realistic test data for:
 - Clinical research on menstrual cycle effects on diabetes management
 - FHIR QuestionnaireResponse processing
 - Aggregate analysis of cycle-aware insulin dosing
+- Testing Nillion nilDB encrypted storage and retrieval

@@ -246,17 +246,35 @@ class SyntheticCohortGenerator:
 
         return round(max(70.0, min(250.0, glucose)), 1)
 
+    def generate_submission_date(self) -> str:
+        """
+        Generate random submission date between now - 2 hours and 3 months ago
+
+        Returns:
+            ISO 8601 formatted datetime string with 'Z' suffix
+        """
+        now = datetime.now()
+        two_hours_ago = now - timedelta(hours=2)
+        three_months_ago = now - timedelta(days=90)
+
+        # Random seconds between 3 months ago and 2 hours ago
+        time_range_seconds = int((two_hours_ago - three_months_ago).total_seconds())
+        random_seconds = random.randint(0, time_range_seconds)
+
+        submission_date = three_months_ago + timedelta(seconds=random_seconds)
+        return submission_date.isoformat() + "Z"
+
     def create_flo_response(self, patient_id: str, lmp_date: str, cycle_length: int) -> Dict[str, Any]:
         """Create FHIR QuestionnaireResponse for Flo Cycle questionnaire"""
         return {
             "resourceType": "QuestionnaireResponse",
             "id": str(uuid.uuid4()),
-            "questionnaire": "https://welshare.health/hpmp/questionnaire/flo-cycle-v2",
+            "questionnaire": "38a97cfa-532d-4a38-9541-c9f366a6e1ed",
             "status": "completed",
             "subject": {
                 "reference": patient_id
             },
-            "authored": datetime.now().isoformat() + "Z",
+            "authored": self.generate_submission_date(),
             "item": [
                 {
                     "linkId": "lmp",
@@ -291,12 +309,12 @@ class SyntheticCohortGenerator:
         return {
             "resourceType": "QuestionnaireResponse",
             "id": str(uuid.uuid4()),
-            "questionnaire": "https://welshare.health/hpmp/questionnaire/dao-diabetes-insulin-cgm-v2",
+            "questionnaire": "dbb1ea85-af98-4a86-b2a1-39fb656462da",
             "status": "completed",
             "subject": {
                 "reference": patient_id
             },
-            "authored": datetime.now().isoformat() + "Z",
+            "authored": self.generate_submission_date(),
             "item": [
                 {
                     "linkId": "delivery-method",
