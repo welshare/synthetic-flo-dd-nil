@@ -272,6 +272,7 @@ class SyntheticCohortGenerator:
             "questionnaire": "38a97cfa-532d-4a38-9541-c9f366a6e1ed",
             "status": "completed",
             "subject": {
+                "id": patient_id,
                 "reference": patient_id
             },
             "authored": self.generate_submission_date(),
@@ -312,6 +313,7 @@ class SyntheticCohortGenerator:
             "questionnaire": "dbb1ea85-af98-4a86-b2a1-39fb656462da",
             "status": "completed",
             "subject": {
+                "id": patient_id,
                 "reference": patient_id
             },
             "authored": self.generate_submission_date(),

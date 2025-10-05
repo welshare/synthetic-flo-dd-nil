@@ -24,3 +24,4 @@ output/
 # OS
 .DS_Store
 Thumbs.db
+upload_manifest.json
