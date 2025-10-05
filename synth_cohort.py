@@ -19,6 +19,8 @@ import hmac
 from ecdsa import SigningKey, SECP256k1
 from mnemonic import Mnemonic
 from dotenv import load_dotenv
+from eth_account import Account
+from eth_account.hdaccount import generate_mnemonic, seed_from_mnemonic, key_from_seed, ETHEREUM_DEFAULT_PATH
 
 # Load environment variables from .env file
 load_dotenv()
@@ -58,79 +60,96 @@ class SyntheticCohortGenerator:
         self.cycle_length_std = 3
 
         # Initialize HD wallet from environment seed
-        self.hd_seed = self._get_hd_seed_from_env()
+        self.hd_mnemonic = self._get_hd_mnemonic_from_env()
         self.current_key_index = 0
 
-    def _get_hd_seed_from_env(self) -> bytes:
+    def _get_hd_mnemonic_from_env(self) -> str:
         """
-        Get HD wallet seed from environment variable or generate deterministic one
+        Get HD wallet mnemonic from environment variable or generate deterministic one
 
         Returns:
-            64-byte seed for HD wallet derivation
+            BIP39 mnemonic phrase for HD wallet derivation
         """
         env_seed = os.getenv('HD_WALLET_SEED')
 
         if env_seed:
-            # Use provided mnemonic or hex seed
+            # Use provided mnemonic
             if ' ' in env_seed:
                 # Treat as BIP39 mnemonic
                 mnemo = Mnemonic("english")
                 if not mnemo.check(env_seed):
                     raise ValueError("Invalid BIP39 mnemonic in HD_WALLET_SEED")
-                return mnemo.to_seed(env_seed)
+                return env_seed
             else:
-                # Treat as hex-encoded seed
+                # If hex is provided, we can't use it directly - generate from it
+                # This maintains deterministic behavior
                 try:
                     seed_bytes = bytes.fromhex(env_seed)
                     if len(seed_bytes) < 16:
                         raise ValueError("HD_WALLET_SEED too short (minimum 16 bytes)")
-                    return seed_bytes
+                    # Generate mnemonic from the entropy
+                    mnemo = Mnemonic("english")
+                    # Use first 32 bytes as entropy for 24-word mnemonic
+                    entropy = seed_bytes[:32]
+                    return mnemo.to_mnemonic(entropy)
                 except ValueError as e:
                     raise ValueError(f"Invalid HD_WALLET_SEED: {e}")
         else:
-            # Generate deterministic seed from random seed for reproducibility
+            # Generate deterministic mnemonic from random seed for reproducibility
             # This ensures the same --seed parameter produces the same DIDs
             seed_bytes = str(random.getstate()).encode('utf-8')
-            return hashlib.sha512(seed_bytes).digest()
+            entropy = hashlib.sha256(seed_bytes).digest()
+            mnemo = Mnemonic("english")
+            return mnemo.to_mnemonic(entropy)
 
-    def _derive_child_key(self, index: int) -> SigningKey:
+    def _derive_ethereum_account(self, index: int) -> Account:
         """
-        Derive a child private key from HD wallet using BIP32-like derivation
+        Derive an Ethereum account from HD wallet using BIP44 derivation path
+
+        Uses path: m/44'/60'/0'/0/{index}
+        - m: master node
+        - 44': BIP44 purpose
+        - 60': Ethereum coin type
+        - 0': account 0
+        - 0: external chain (not change addresses)
+        - index: address index
 
         Args:
             index: Child key index
 
         Returns:
-            secp256k1 SigningKey
+            eth_account.Account instance
         """
-        # Simple BIP32-like derivation: HMAC-SHA512(master_seed, index)
-        index_bytes = index.to_bytes(4, byteorder='big')
-        hmac_result = hmac.new(
-            self.hd_seed,
-            b"did:nil:" + index_bytes,
-            hashlib.sha512
-        ).digest()
-
-        # Use first 32 bytes as private key
-        private_key_bytes = hmac_result[:32]
-
-        # Create secp256k1 signing key
-        signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
-        return signing_key
+        # Derive account using BIP44 Ethereum path: m/44'/60'/0'/0/{index}
+        Account.enable_unaudited_hdwallet_features()
+        account = Account.from_mnemonic(
+            self.hd_mnemonic,
+            account_path=f"m/44'/60'/0'/0/{index}"
+        )
+        return account
 
     def generate_patient_id(self) -> tuple[str, Dict[str, Any]]:
         """
-        Generate deterministic DID from HD wallet-derived secp256k1 key
+        Generate deterministic DID from HD wallet-derived Ethereum account
 
         Returns:
-            Tuple of (DID in format did:nil:{compressed_public_key_hex}, key_material dict)
+            Tuple of (DID in format did:nil:{ethereum_address}, key_material dict)
         """
-        # Derive next key from HD wallet
-        signing_key = self._derive_child_key(self.current_key_index)
+        # Derive next Ethereum account from HD wallet
+        eth_account = self._derive_ethereum_account(self.current_key_index)
         key_index = self.current_key_index
         self.current_key_index += 1
 
-        # Get compressed public key (33 bytes: 02/03 prefix + 32 bytes x-coordinate)
+        # Get Ethereum address (20 bytes, checksummed)
+        eth_address = eth_account.address  # e.g., "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+
+        # Get private key (32 bytes)
+        private_key_bytes = eth_account.key
+        private_key_hex = private_key_bytes.hex()
+
+        # Derive public key from private key for secp256k1 compatibility
+        # eth_account uses secp256k1 curve (same as Bitcoin/Ethereum)
+        signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
         verifying_key = signing_key.get_verifying_key()
         public_key_bytes = verifying_key.to_string()  # 64 bytes uncompressed
 
@@ -141,15 +160,17 @@ class SyntheticCohortGenerator:
         prefix = b'\x03' if y_is_odd else b'\x02'
         compressed_public_key = prefix + x_coord
 
-        # Convert to hex for DID
-        pubkey_hex = compressed_public_key.hex()
-        did = f"did:nil:{pubkey_hex}"
+        # Use Ethereum address (without 0x prefix) in DID
+        # This gives us a 20-byte identifier that's Ethereum-compatible
+        address_hex = eth_address[2:].lower()  # Remove '0x' prefix
+        did = f"did:nil:{address_hex}"
 
         # Prepare key material for storage
-        private_key_hex = signing_key.to_string().hex()
         key_material = {
             "did": did,
             "key_index": key_index,
+            "derivation_path": f"m/44'/60'/0'/0/{key_index}",
+            "ethereum_address": eth_address,
             "private_key": private_key_hex,
             "public_key_compressed": compressed_public_key.hex(),
             "public_key_uncompressed": public_key_bytes.hex(),
@@ -435,20 +456,20 @@ def generate_seed_phrase():
 
 def verify_did_key(did: str):
     """
-    Verify that a DID's stored private key matches its public key
+    Verify that a DID's stored private key matches its Ethereum address
 
     Args:
-        did: The DID to verify (format: did:nil:{pubkey_hex})
+        did: The DID to verify (format: did:nil:{ethereum_address_hex})
     """
-    # Extract the public key hex from the DID
+    # Extract the address hex from the DID
     if not did.startswith("did:nil:"):
-        print(f"ERROR: Invalid DID format. Expected 'did:nil:{{pubkey}}', got: {did}")
+        print(f"ERROR: Invalid DID format. Expected 'did:nil:{{address}}', got: {did}")
         return False
 
-    pubkey_from_did = did.split(":")[-1]
+    address_from_did = did.split(":")[-1]
 
     # Look up the .key.json file
-    key_path = OUTPUT_DIR / f"{pubkey_from_did}.key.json"
+    key_path = OUTPUT_DIR / f"{address_from_did}.key.json"
 
     if not key_path.exists():
         print(f"ERROR: Key file not found: {key_path}")
@@ -473,7 +494,7 @@ def verify_did_key(did: str):
         print(f"  Stored:   {key_material.get('did')}")
         return False
 
-    # Reconstruct public key from private key
+    # Reconstruct Ethereum address from private key
     try:
         private_key_hex = key_material.get("private_key")
         if not private_key_hex:
@@ -481,6 +502,13 @@ def verify_did_key(did: str):
             return False
 
         private_key_bytes = bytes.fromhex(private_key_hex)
+
+        # Recreate Ethereum account from private key
+        Account.enable_unaudited_hdwallet_features()
+        eth_account = Account.from_key(private_key_bytes)
+        derived_address = eth_account.address
+
+        # Also verify using secp256k1
         signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
         verifying_key = signing_key.get_verifying_key()
 
@@ -514,11 +542,20 @@ def verify_did_key(did: str):
             print(f"  Derived: {derived_compressed}")
             return False
 
-        # Verify the compressed public key matches the DID
-        if derived_compressed != pubkey_from_did:
-            print(f"ERROR: DID public key mismatch!")
-            print(f"  From DID: {pubkey_from_did}")
-            print(f"  Derived:  {derived_compressed}")
+        # Verify Ethereum address matches
+        stored_eth_address = key_material.get("ethereum_address")
+        if stored_eth_address != derived_address:
+            print(f"ERROR: Ethereum address mismatch!")
+            print(f"  Stored:  {stored_eth_address}")
+            print(f"  Derived: {derived_address}")
+            return False
+
+        # Verify the address in DID matches
+        derived_address_hex = derived_address[2:].lower()  # Remove '0x' prefix
+        if derived_address_hex != address_from_did:
+            print(f"ERROR: DID address mismatch!")
+            print(f"  From DID: {address_from_did}")
+            print(f"  Derived:  {derived_address_hex}")
             return False
 
         # All checks passed
@@ -526,13 +563,16 @@ def verify_did_key(did: str):
         print("✓ Private key is valid")
         print("✓ Derived public key (uncompressed) matches stored value")
         print("✓ Derived public key (compressed) matches stored value")
-        print("✓ Compressed public key matches DID")
+        print("✓ Ethereum address matches stored value")
+        print("✓ Ethereum address matches DID")
         print("\n" + "=" * 70)
         print("VERIFICATION SUCCESSFUL")
         print("=" * 70)
         print(f"\nKey details:")
         print(f"  DID: {did}")
+        print(f"  Ethereum address: {derived_address}")
         print(f"  Key index: {key_material.get('key_index')}")
+        print(f"  Derivation path: {key_material.get('derivation_path')}")
         print(f"  Curve: {key_material.get('curve')}")
         print(f"  Private key: {private_key_hex[:16]}...{private_key_hex[-16:]}")
         print(f"  Public key (compressed): {derived_compressed}")

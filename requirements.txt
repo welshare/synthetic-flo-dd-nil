@@ -4,3 +4,4 @@ ecdsa>=0.18.0
 mnemonic>=0.20
 python-dotenv>=1.0.0
 secretvaults>=0.1.0
+eth-account>=0.13.0
