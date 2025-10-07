@@ -20,7 +20,15 @@
     - Sleep awakenings [LOINC 80372-6]
 
 
-*(Show JSON payload for realism)*
+### workflow input as json
+```json
+{
+  "hypothesis": "Hypothesis: Women with T1D show a measurable rise in glucose and insulin needs during the luteal phase. Without cycle-aware dosing, this produces periods of hyperglycemia and occasional overnight crashes from over-correction. Cycle-aware recommendations improve stability. Inclusion Criteria for the study are: Women 18-45 with T1D, CGM + cycle tracking available.",
+  "studyName": "HYP-MC-01: Validate cycle-phase insulin variability",
+  "studyDescription": "We're asking the cohort matching the inclusion criteria to share further data that helps verifying the hypothesis"
+}
+
+```
 
 
 ##  Matching Process
