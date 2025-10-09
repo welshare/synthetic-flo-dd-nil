@@ -31,6 +31,49 @@ python3 synth_cohort.py 187 --stats
 python3 synth_cohort.py clean
 ```
 
+### Analyze Cohort Statistics
+```bash
+# Analyze cohort and validate statistical properties
+python3 analyze_cohort.py
+
+# Analyze from custom directory
+python3 analyze_cohort.py --dir custom_output/
+```
+
+**Output includes:**
+- Mean nighttime glucose by cycle phase (follicular vs luteal)
+- Mean basal insulin by cycle phase
+- Phase comparison (luteal - follicular differences)
+- Cohort characteristics (age range, delivery method distribution)
+- Statistical validation against expected values
+
+### Export Cohort to CSV
+```bash
+# Convert cohort to CSV for verification
+python3 cohort_to_csv.py
+
+# Save to custom file
+python3 cohort_to_csv.py --output my_cohort.csv
+
+# Show statistics only (no CSV output)
+python3 cohort_to_csv.py --stats
+
+# Read from custom directory
+python3 cohort_to_csv.py --dir custom_output/
+```
+
+**Output CSV Columns:**
+- `subject_id`: Patient DID (did:nil:{pubkey})
+- `age`: Patient age (18-45)
+- `delivery_method`: "Insulin pump" or "Multiple daily injections"
+- `lmp_date`: Last menstrual period date (YYYY-MM-DD)
+- `cycle_length`: Typical cycle length in days
+- `cycle_phase`: Calculated phase ("follicular" or "luteal")
+- `basal_insulin`: Total basal insulin dose (units/day)
+- `nighttime_glucose`: Average CGM glucose 00:00-06:00 (mg/dL)
+- `flo_response_id`, `flo_authored`: Flo questionnaire metadata
+- `dao_response_id`, `dao_authored`: DAO questionnaire metadata
+
 ### Upload to Nillion nilDB
 ```bash
 # Upload entire cohort to Nillion

@@ -13,6 +13,7 @@ ENV/
 
 # Generated output
 output/
+cohort.csv
 
 # IDE
 .vscode/
